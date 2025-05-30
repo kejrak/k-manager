@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pod-error-monitor-backend
+  namespace: pod-error-monitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pod-error-monitor-backend
+  template:
+    metadata:
+      labels:
+        app: pod-error-monitor-backend
+    spec:
+      serviceAccountName: pod-error-monitor
+      containers:
+      - name: backend
+        image: pod-error-monitor-backend:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+        livenessProbe:
+          httpGet:
+            path: /api/namespaces
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/namespaces
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pod-error-monitor-backend
+  namespace: pod-error-monitor
+spec:
+  selector:
+    app: pod-error-monitor-backend
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP 

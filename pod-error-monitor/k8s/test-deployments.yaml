@@ -1,0 +1,120 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: error-test
+---
+# 1. CrashLoopBackOff Example
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crashloop-pod
+  namespace: error-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crashloop-test
+  template:
+    metadata:
+      labels:
+        app: crashloop-test
+    spec:
+      containers:
+      - name: crasher
+        image: busybox
+        command: ["/bin/sh", "-c", "sleep 5; exit 1"]  # Will exit after 5 seconds
+---
+# 2. ImagePullBackOff Example
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imagepull-pod
+  namespace: error-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: imagepull-test
+  template:
+    metadata:
+      labels:
+        app: imagepull-test
+    spec:
+      containers:
+      - name: nonexistent
+        image: nonexistent/image:v999  # Non-existent image
+---
+# 3. Resource Limits Example
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oom-pod
+  namespace: error-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oom-test
+  template:
+    metadata:
+      labels:
+        app: oom-test
+    spec:
+      containers:
+      - name: memory-hog
+        image: busybox
+        command: ["/bin/sh", "-c", "while true; do seq 1000000 > /dev/null; done"]
+        resources:
+          limits:
+            memory: "64Mi"
+          requests:
+            memory: "32Mi"
+---
+# 4. ConfigMap Mount Error Example
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: configmap-pod
+  namespace: error-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: configmap-test
+  template:
+    metadata:
+      labels:
+        app: configmap-test
+    spec:
+      containers:
+      - name: configmap-mounter
+        image: busybox
+        command: ["sleep", "infinity"]
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+      volumes:
+      - name: config-volume
+        configMap:
+          name: nonexistent-config  # Non-existent ConfigMap
+---
+# 5. Invalid Command Example
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: invalid-cmd-pod
+  namespace: error-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: invalid-cmd-test
+  template:
+    metadata:
+      labels:
+        app: invalid-cmd-test
+    spec:
+      containers:
+      - name: invalid-cmd
+        image: nginx
+        command: ["/nonexistent/command"]  # Invalid command path 

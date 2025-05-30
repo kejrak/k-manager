@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pod-error-monitor
+  namespace: pod-error-monitor
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-error-monitor-reader
+rules:
+- apiGroups: [""]
+  resources: ["pods", "namespaces"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pod-error-monitor-reader-binding
+subjects:
+- kind: ServiceAccount
+  name: pod-error-monitor
+  namespace: pod-error-monitor
+roleRef:
+  kind: ClusterRole
+  name: pod-error-monitor-reader
+  apiGroup: rbac.authorization.k8s.io 

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pod-error-monitor
+  labels:
+    name: pod-error-monitor
+    app: pod-error-monitor 
