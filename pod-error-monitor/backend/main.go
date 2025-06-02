@@ -3,9 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"sort"
+
+	"pod-error-monitor/config"
 
 	"github.com/gorilla/mux"
 	"github.com/rs/cors"
@@ -13,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 type PodError struct {
@@ -35,25 +40,65 @@ type NamespaceStats struct {
 	TotalRestarts int32   `json:"totalRestarts"`
 }
 
+type KubeConfig struct {
+	CurrentContext string   `json:"currentContext"`
+	Contexts       []string `json:"contexts"`
+}
+
 type Server struct {
 	clientset *kubernetes.Clientset
+	config    *clientcmd.ClientConfig
+	appConfig *config.Config
 }
 
 func main() {
-	// Get in-cluster config
-	config, err := rest.InClusterConfig()
+	// Load configuration
+	configPath := flag.String("config", config.GetConfigPath(), "path to configuration file")
+	flag.Parse()
+
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
-		log.Fatalf("Error creating in-cluster config: %v", err)
+		log.Fatalf("Error loading configuration: %v", err)
+	}
+
+	var k8sConfig *rest.Config
+	var clientConfig clientcmd.ClientConfig
+
+	if cfg.Kubernetes.UseInCluster {
+		// Get in-cluster config
+		k8sConfig, err = rest.InClusterConfig()
+		if err != nil {
+			log.Fatalf("Error creating in-cluster config: %v", err)
+		}
+	} else {
+		// Get kubeconfig
+		rules := clientcmd.NewDefaultClientConfigLoadingRules()
+		rules.ExplicitPath = cfg.Kubernetes.KubeconfigPath
+
+		overrides := &clientcmd.ConfigOverrides{}
+		if cfg.Kubernetes.DefaultContext != "" {
+			overrides.CurrentContext = cfg.Kubernetes.DefaultContext
+		}
+
+		clientConfig = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides)
+		k8sConfig, err = clientConfig.ClientConfig()
+		if err != nil {
+			log.Fatalf("Error building kubeconfig: %v", err)
+		}
 	}
 
 	// Create the clientset
-	clientset, err := kubernetes.NewForConfig(config)
+	clientset, err := kubernetes.NewForConfig(k8sConfig)
 	if err != nil {
 		log.Fatalf("Error creating clientset: %v", err)
 	}
 
-	// Initialize server with clientset
-	server := &Server{clientset: clientset}
+	// Initialize server with clientset and config
+	server := &Server{
+		clientset: clientset,
+		config:    &clientConfig,
+		appConfig: cfg,
+	}
 
 	// Initialize router
 	r := mux.NewRouter()
@@ -61,17 +106,115 @@ func main() {
 	// API routes
 	r.HandleFunc("/api/namespaces", server.getNamespaceStats).Methods("GET")
 	r.HandleFunc("/api/namespaces/{namespace}/pods", server.getNamespacePodErrors).Methods("GET")
+	r.HandleFunc("/api/contexts", server.getContexts).Methods("GET")
+	r.HandleFunc("/api/contexts/{context}", server.switchContext).Methods("POST")
 
 	// Configure CORS
 	c := cors.New(cors.Options{
-		AllowedOrigins: []string{"http://localhost:3000"},
-		AllowedMethods: []string{"GET", "POST", "OPTIONS"},
+		AllowedOrigins: cfg.Server.CORS.AllowedOrigins,
+		AllowedMethods: cfg.Server.CORS.AllowedMethods,
 	})
 
 	// Start server
-	port := ":8080"
-	log.Printf("Server starting on port %s", port)
-	log.Fatal(http.ListenAndServe(port, c.Handler(r)))
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	log.Printf("Server starting on %s", addr)
+	log.Fatal(http.ListenAndServe(addr, c.Handler(r)))
+}
+
+func (s *Server) getContexts(w http.ResponseWriter, r *http.Request) {
+	if s.config == nil {
+		http.Error(w, "Not running with kubeconfig", http.StatusBadRequest)
+		return
+	}
+
+	rawConfig, err := (*s.config).RawConfig()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	contexts := make([]string, 0, len(rawConfig.Contexts))
+	for name := range rawConfig.Contexts {
+		contexts = append(contexts, name)
+	}
+
+	response := KubeConfig{
+		CurrentContext: rawConfig.CurrentContext,
+		Contexts:       contexts,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) switchContext(w http.ResponseWriter, r *http.Request) {
+	if s.config == nil {
+		http.Error(w, "Not running with kubeconfig", http.StatusBadRequest)
+		return
+	}
+
+	vars := mux.Vars(r)
+	newContext := vars["context"]
+
+	rawConfig, err := (*s.config).RawConfig()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Validate context exists
+	if _, exists := rawConfig.Contexts[newContext]; !exists {
+		http.Error(w, "Context not found", http.StatusBadRequest)
+		return
+	}
+
+	// Update current context
+	rawConfig.CurrentContext = newContext
+
+	// Create new config
+	configPath := s.appConfig.Kubernetes.KubeconfigPath
+	if err := clientcmd.ModifyConfig(clientcmd.NewDefaultPathOptions(), rawConfig, true); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Create new client config
+	rules := clientcmd.NewDefaultClientConfigLoadingRules()
+	rules.ExplicitPath = configPath
+	overrides := &clientcmd.ConfigOverrides{
+		CurrentContext: newContext,
+	}
+	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides)
+
+	// Get new rest config
+	config, err := clientConfig.ClientConfig()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Create new clientset
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Update server's clientset and config
+	s.clientset = clientset
+	s.config = &clientConfig
+
+	// Get list of contexts for response
+	contexts := make([]string, 0, len(rawConfig.Contexts))
+	for name := range rawConfig.Contexts {
+		contexts = append(contexts, name)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(KubeConfig{
+		CurrentContext: newContext,
+		Contexts:       contexts,
+	})
 }
 
 func (s *Server) getNamespaceStats(w http.ResponseWriter, r *http.Request) {

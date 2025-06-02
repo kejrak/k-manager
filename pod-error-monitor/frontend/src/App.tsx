@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import ContextSwitcher from './components/ContextSwitcher';
+import useKubeContext from './hooks/useKubeContext';
 import './App.css';
 
 interface NamespaceStats {
@@ -27,25 +29,37 @@ function App() {
   const [podErrors, setPodErrors] = useState<PodError[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  
+  const {
+    contexts,
+    currentContext,
+    isLoading: isContextSwitching,
+    error: contextError,
+    switchContext,
+  } = useKubeContext();
 
   useEffect(() => {
     fetchNamespaces();
-    const interval = setInterval(fetchNamespaces, 5000); // Refresh every 5 seconds
+    const interval = setInterval(fetchNamespaces, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [currentContext]); // Refetch when context changes
 
   useEffect(() => {
     if (selectedNamespace) {
       fetchPodErrors(selectedNamespace);
     }
-  }, [selectedNamespace]);
+  }, [selectedNamespace, currentContext]); // Refetch when context or namespace changes
 
   const fetchNamespaces = async () => {
     try {
       const response = await fetch('http://localhost:8080/api/namespaces');
+      if (!response.ok) {
+        throw new Error('Failed to fetch namespaces');
+      }
       const data = await response.json();
       setNamespaces(data);
       setLoading(false);
+      setError(null);
     } catch (err) {
       setError('Failed to fetch namespace data');
       setLoading(false);
@@ -55,8 +69,12 @@ function App() {
   const fetchPodErrors = async (namespace: string) => {
     try {
       const response = await fetch(`http://localhost:8080/api/namespaces/${namespace}/pods`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch pod errors');
+      }
       const data = await response.json();
       setPodErrors(data);
+      setError(null);
     } catch (err) {
       setError('Failed to fetch pod errors');
     }
@@ -66,89 +84,80 @@ function App() {
     setSelectedNamespace(selectedNamespace === namespace ? null : namespace);
   };
 
+  const handleContextSwitch = async (context: string) => {
+    await switchContext(context);
+    // Reset selected namespace when switching contexts
+    setSelectedNamespace(null);
+    setPodErrors([]);
+  };
+
   if (loading) return <div className="loading">Loading...</div>;
-  if (error) return <div className="error">{error}</div>;
+  if (error || contextError) {
+    return <div className="error">{error || contextError}</div>;
+  }
 
   return (
-    <div className="container mx-auto p-4">
-      <h1 className="text-3xl font-bold mb-6">Kubernetes Pod Error Monitor</h1>
-      
-      <div className="grid gap-4">
+    <div className="container mx-auto px-4 py-8">
+      <ContextSwitcher
+        contexts={contexts}
+        currentContext={currentContext}
+        onContextSwitch={handleContextSwitch}
+        isLoading={isContextSwitching}
+      />
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {namespaces.map((ns) => (
-          <div key={ns.name} className="bg-white rounded-lg shadow-md overflow-hidden">
-            <div 
-              className={`p-4 cursor-pointer transition-colors ${
-                selectedNamespace === ns.name ? 'bg-blue-50' : 'hover:bg-gray-50'
-              }`}
-              onClick={() => handleNamespaceClick(ns.name)}
-            >
-              <div className="flex justify-between items-center">
-                <div>
-                  <h2 className="text-xl font-semibold">{ns.name}</h2>
-                  <div className="text-sm text-gray-600">
-                    {ns.uniquePods} affected pods • Score: {ns.score.toFixed(1)}
-                  </div>
-                </div>
-                <div className="flex items-center">
-                  <div className="bg-red-100 text-red-800 px-3 py-1 rounded-full text-sm font-medium">
-                    {ns.totalErrors} {ns.totalErrors === 1 ? 'error' : 'errors'}
-                  </div>
-                </div>
-              </div>
+          <div
+            key={ns.name}
+            className={`p-4 rounded-lg shadow cursor-pointer transition-all duration-200 hover:shadow-lg ${
+              selectedNamespace === ns.name ? 'ring-2 ring-blue-500' : ''
+            }`}
+            onClick={() => handleNamespaceClick(ns.name)}
+          >
+            <h3 className="text-lg font-semibold">{ns.name}</h3>
+            <p className="text-sm text-gray-600">{ns.uniquePods} affected pods</p>
+            <p className="text-sm text-gray-600">Score: {ns.score.toFixed(1)}</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <span className="inline-block bg-red-100 text-red-800 px-2 py-1 rounded text-xs">
+                CrashLoop: {ns.crashLoop}
+              </span>
+              <span className="inline-block bg-yellow-100 text-yellow-800 px-2 py-1 rounded text-xs">
+                ImagePull: {ns.imagePull}
+              </span>
+              <span className="inline-block bg-orange-100 text-orange-800 px-2 py-1 rounded text-xs">
+                High Restarts: {ns.highRestarts}
+              </span>
             </div>
-
-            {selectedNamespace === ns.name && (
-              <div className="border-t border-gray-200">
-                <div className="p-4">
-                  <div className="grid grid-cols-4 gap-4 mb-4">
-                    <div className="bg-orange-50 p-3 rounded">
-                      <div className="text-orange-800 font-medium">CrashLoop</div>
-                      <div className="text-2xl font-bold">{ns.crashLoop}</div>
-                    </div>
-                    <div className="bg-purple-50 p-3 rounded">
-                      <div className="text-purple-800 font-medium">Image Pull</div>
-                      <div className="text-2xl font-bold">{ns.imagePull}</div>
-                    </div>
-                    <div className="bg-blue-50 p-3 rounded">
-                      <div className="text-blue-800 font-medium">High Restarts</div>
-                      <div className="text-2xl font-bold">{ns.highRestarts}</div>
-                    </div>
-                    <div className="bg-gray-50 p-3 rounded">
-                      <div className="text-gray-800 font-medium">Total Restarts</div>
-                      <div className="text-2xl font-bold">{ns.totalRestarts}</div>
-                    </div>
-                  </div>
-
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full divide-y divide-gray-200">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Pod</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Container</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Error Type</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Restarts</th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Message</th>
-                        </tr>
-                      </thead>
-                      <tbody className="bg-white divide-y divide-gray-200">
-                        {podErrors.map((error, index) => (
-                          <tr key={`${error.podName}-${index}`}>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{error.podName}</td>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{error.containerName}</td>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{error.errorType}</td>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{error.restartCount}</td>
-                            <td className="px-6 py-4 text-sm text-gray-500">{error.errorMessage}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
         ))}
       </div>
+
+      {selectedNamespace && (
+        <div className="mt-8">
+          <h3 className="text-xl font-bold mb-4">Pod Errors in {selectedNamespace}</h3>
+          <div className="space-y-4">
+            {podErrors.map((error, index) => (
+              <div key={index} className="bg-white p-4 rounded-lg shadow">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <h4 className="font-semibold">{error.podName}</h4>
+                    <p className="text-sm text-gray-600">Container: {error.containerName}</p>
+                  </div>
+                  <span className="text-sm bg-red-100 text-red-800 px-2 py-1 rounded">
+                    {error.errorType}
+                  </span>
+                </div>
+                <p className="mt-2 text-sm text-gray-700">{error.errorMessage}</p>
+                {error.restartCount > 0 && (
+                  <p className="mt-1 text-sm text-gray-600">
+                    Restart Count: {error.restartCount}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

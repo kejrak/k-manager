@@ -27,6 +27,10 @@ spec:
           requests:
             cpu: "100m"
             memory: "128Mi"
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
         livenessProbe:
           httpGet:
             path: /api/namespaces
@@ -39,6 +43,44 @@ spec:
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: pod-error-monitor-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pod-error-monitor-config
+  namespace: pod-error-monitor
+data:
+  config.yaml: |
+    server:
+      port: 8080
+      host: "0.0.0.0"
+      cors:
+        allowed_origins:
+          - "http://localhost:3000"
+          - "http://localhost:80"
+        allowed_methods:
+          - "GET"
+          - "POST"
+          - "OPTIONS"
+
+    kubernetes:
+      use_in_cluster: true
+      kubeconfig_path: "/root/.kube/config"
+      default_context: ""
+      refresh_interval: 5
+
+    monitoring:
+      high_restart_threshold: 5
+      error_weights:
+        crash_loop: 3.0
+        image_pull: 2.0
+        high_restarts: 2.0
+        other_errors: 1.0
+        restart_multiplier: 0.1
 ---
 apiVersion: v1
 kind: Service
